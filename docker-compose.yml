@@ -1,0 +1,31 @@
+# 十号社区活动工作台 —— 单机部署
+# 用法：docker compose up -d --build
+# 端口与绑定地址可用环境变量覆盖：BIND=0.0.0.0 PORT=9000 docker compose up -d
+# 国内网络构建时可换源（也可用 .env 文件固化）：
+#   PIP_INDEX=https://mirrors.aliyun.com/pypi/simple NPM_REGISTRY=https://registry.npmmirror.com docker compose build
+services:
+  app:
+    build:
+      context: .
+      args:
+        PIP_INDEX: ${PIP_INDEX:-https://pypi.org/simple}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        # 子路径部署：VITE_BASE=/shihuaxiang/（部署钩子按需注入，默认根路径）
+        VITE_BASE: ${VITE_BASE:-/}
+    image: no10-workbench
+    container_name: no10-workbench
+    restart: unless-stopped
+    # 密钥环境变量（优先级高于网页设置页保存的值）：
+    # 服务器上在项目根目录建 .env 文件写入 DEEPSEEK_API_KEY / SUPER_CODE 即可
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      # 超管邀请码：服务器 .env 写 SUPER_CODE=强随机码 即可覆盖默认值（务必修改）
+      - SUPER_CODE=${SUPER_CODE:-}
+      - TZ=Asia/Shanghai   # 容器默认 UTC，不加时区会导致时间戳慢 8 小时
+    ports:
+      - "${BIND:-127.0.0.1}:${PORT:-8321}:8321"
+    volumes:
+      # 数据全部落在宿主机当前目录，升级镜像不丢数据
+      - ./storage:/app/storage   # SQLite（含设置里的 API Key）与上传的照片/票据
+      - ./wiki:/app/wiki         # Agent 资料库（tools/build_wiki.py 产物）
+      - ./exports:/app/exports   # 导出的 Word 留档（不挂载会随容器重建丢失）

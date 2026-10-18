@@ -1,0 +1,17 @@
+# 构建上下文隔离：绝不把数据、密钥与历史送进 Docker daemon
+.git
+.gitignore
+.venv
+.zcode
+__pycache__
+*.pyc
+.pytest_cache
+node_modules
+frontend/dist
+storage
+backups
+wiki
+exports
+.env
+*.tar.gz
+AGENTS.md
