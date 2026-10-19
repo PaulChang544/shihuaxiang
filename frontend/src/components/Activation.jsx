@@ -31,7 +31,7 @@ export function ActivationForm({ onDone }) {
         <div className="field__hint">本机当前身份：{humanName(me.name)}。换码后本机身份随之切换。</div>
       )}
       <div className="field">
-        <label className="field__label" htmlFor="act-code">邀请码 <small>仅首次进站时输入，此后保存在本机</small></label>
+        <label className="field__label" htmlFor="act-code">邀请码 <small>输入一次即可，活跃使用自动保持登录</small></label>
         <input
           id="act-code"
           className="input act-form__input"

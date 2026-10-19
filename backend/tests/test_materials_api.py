@@ -83,7 +83,7 @@ def test_extract_coerces_list_fields(client, monkeypatch):
         }, ensure_ascii=False)
 
     monkeypatch.setattr(llm, "chat", fake_chat)
-    r = client.post("/api/materials/extract", json={"text": "足够长的推文正文内容用于测试字段归一化处理"})
+    r = client.post("/api/materials/extract", json={"text": "足够长的推文正文内容用于测试字段归一化处理", "url": "https://mp.weixin.qq.com/s/y"})
     assert r.status_code == 200
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done", job
@@ -94,26 +94,32 @@ def test_extract_coerces_list_fields(client, monkeypatch):
     assert data["participation"] == ""
 
 
-def test_extract_from_url(client, monkeypatch):
-    """粘贴微信文章链接：服务端抓取正文 → AI 提取入库，来源标题用抓取到的标题。"""
-    from backend.app import llm, wechat
+def test_extract_from_screenshot(client, monkeypatch):
+    """上传推文长截图：视觉转写正文 → AI 提取入库，来源标题用识别出的文章标题。"""
+    import io
+    import json
 
-    async def fake_fetch(url):
-        return {
-            "title": "中秋游园会回顾推文",
-            "author": "十号社区",
-            "publish_time": "2024-09-16 12:00",
-            "text": "昨天的中秋活动，居民们一起猜灯谜、做月饼、投壶，热闹非凡……",
-            "images": [],
-        }
+    from backend.app import llm
+    from backend.tests.test_uploads_api import _real_png
+
+    calls = {"n": 0}
 
     async def fake_chat(messages, **kwargs):
-        import json
-        return json.dumps(MATERIAL_JSON, ensure_ascii=False)
+        calls["n"] += 1
+        if calls["n"] == 1:  # 首片：标题 + 正文转写
+            return json.dumps({
+                "is_article": True,
+                "title": "中秋游园会回顾推文",
+                "text": "昨天的中秋活动，居民们一起猜灯谜、做月饼、投壶，热闹非凡……",
+            }, ensure_ascii=False)
+        return json.dumps(MATERIAL_JSON, ensure_ascii=False)  # 素材字段提取
 
-    monkeypatch.setattr(wechat, "fetch_article", fake_fetch)
     monkeypatch.setattr(llm, "chat", fake_chat)
-    r = client.post("/api/materials/extract-from-url", json={"url": "https://mp.weixin.qq.com/s/abc"})
+    r = client.post(
+        "/api/materials/extract-image",
+        files={"file": ("shot.png", io.BytesIO(_real_png(8, 8)), "image/png")},
+        data={"url": "https://mp.weixin.qq.com/s/abc"},
+    )
     assert r.status_code == 200
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "done", job
@@ -121,21 +127,71 @@ def test_extract_from_url(client, monkeypatch):
     assert data["name"] == "中秋游园会"
     assert data["source_title"] == "中秋游园会回顾推文"
     assert data["source_url"] == "https://mp.weixin.qq.com/s/abc"
+    assert "猜灯谜" in data["raw_text"]
 
 
-def test_extract_from_url_fetch_error_maps_502(client, monkeypatch):
-    from backend.app import wechat
+def test_extract_from_screenshot_rejects_non_article(client, monkeypatch):
+    import io
+    import json
 
-    async def bad_fetch(url):
-        raise wechat.FetchError("无法解析正文（可能已删除/受限/需要验证），请改用手动粘贴正文")
+    from backend.app import llm
+    from backend.tests.test_uploads_api import _real_png
 
-    monkeypatch.setattr(wechat, "fetch_article", bad_fetch)
-    r = client.post("/api/materials/extract-from-url", json={"url": "https://mp.weixin.qq.com/s/dead"})
+    async def fake_chat(messages, **kwargs):
+        return json.dumps({"is_article": False, "title": "", "text": ""}, ensure_ascii=False)
+
+    monkeypatch.setattr(llm, "chat", fake_chat)
+    r = client.post(
+        "/api/materials/extract-image",
+        files={"file": ("chat.png", io.BytesIO(_real_png(8, 8)), "image/png")},
+        data={"url": "https://mp.weixin.qq.com/s/abc"},
+    )
     assert r.status_code == 200
     job = _wait_job(client, r.json()["job_id"])
     assert job["status"] == "failed"
-    assert "手动粘贴" in job["error"]
+    assert "不是推文页面" in job["error"]
+    assert client.get("/api/materials").json() == []
 
 
-def test_extract_from_url_requires_url(client):
-    assert client.post("/api/materials/extract-from-url", json={"url": "  "}).status_code == 400
+def test_extract_from_screenshot_validates_file(client):
+    import io
+
+    from backend.tests.test_uploads_api import _real_png
+
+    r = client.post(
+        "/api/materials/extract-image",
+        files={"file": ("shot.txt", io.BytesIO(_real_png(8, 8)), "text/plain")},
+        data={"url": "https://mp.weixin.qq.com/s/abc"},
+    )
+    assert r.status_code == 400
+    r = client.post(
+        "/api/materials/extract-image",
+        files={"file": ("shot.png", io.BytesIO(b""), "image/png")},
+        data={"url": "https://mp.weixin.qq.com/s/abc"},
+    )
+    assert r.status_code == 400
+
+
+def test_url_required_for_intake(client, monkeypatch):
+    """推文链接必填（与活动归档一致）：截图与粘贴正文两条入库路径都要先给链接。"""
+    import io
+
+    from backend.tests.test_uploads_api import _real_png
+
+    r = client.post(
+        "/api/materials/extract-image",
+        files={"file": ("shot.png", io.BytesIO(_real_png(8, 8)), "image/png")},
+    )
+    assert r.status_code == 400 and "链接" in r.json()["detail"]
+    r = client.post("/api/materials/extract", json={"text": "足够长的推文正文内容用于测试链接必填校验规则"})
+    assert r.status_code == 400 and "链接" in r.json()["detail"]
+
+
+def test_url_fetch_endpoint_removed(client):
+    """全站不再抓取微信文章：抓取模块与旧接口都已移除。"""
+    import importlib.util
+
+    assert importlib.util.find_spec("backend.app.wechat") is None
+    assert client.post(
+        "/api/materials/extract-from-url", json={"url": "https://mp.weixin.qq.com/s/abc"}
+    ).status_code in (404, 405)

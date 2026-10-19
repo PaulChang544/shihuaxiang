@@ -15,6 +15,14 @@ export function IdentityProvider({ children }) {
   const [me, setMeState] = useState(null)
   const [activated, setActivated] = useState(false)
 
+  /* 身份落定统一走这里：广播事件供站点级监听方（如 AI 状态灯）在登录/换人/退出后重查 */
+  const applyMe = useCallback((m) => {
+    setMeState(m)
+    try {
+      window.dispatchEvent(new CustomEvent('shx-identity-changed', { detail: { id: m?.id ?? null } }))
+    } catch { /* ignore */ }
+  }, [])
+
   const readCached = () => {
     try {
       const o = JSON.parse(localStorage.getItem(KEY) || 'null')
@@ -53,23 +61,23 @@ export function IdentityProvider({ children }) {
     } catch {
       setMembers([])
     }
-    setMeState(current)
+    applyMe(current)
     setActivated(!!current)
-  }, [])
+  }, [applyMe])
 
   useEffect(() => { load() }, [load])
 
   /* 任一接口返回 401（会话过期/被吊销）→ 回到激活页 */
   useEffect(() => {
     const onExpired = () => {
-      setMeState(null)
+      applyMe(null)
       setActivated(false)
       setMembers([])
       try { localStorage.removeItem(KEY) } catch { /* ignore */ }
     }
     window.addEventListener('shx-auth-expired', onExpired)
     return () => window.removeEventListener('shx-auth-expired', onExpired)
-  }, [])
+  }, [applyMe])
 
   /* 输入邀请码激活（首次进站 / 换人使用） */
   const activate = useCallback(async (code) => {
@@ -79,34 +87,34 @@ export function IdentityProvider({ children }) {
       const r = await api('/api/members/claim', { method: 'POST', body: { code: trimmed } })
       const m = r.member
       try { localStorage.setItem(KEY, JSON.stringify(m)) } catch { /* ignore */ }
-      setMeState(m)
+      applyMe(m)
       setActivated(true)
       try { setMembers(await api('/api/members')) } catch { setMembers([]) }
       return { ok: true }
     } catch (e) {
       return { ok: false, error: e.message }
     }
-  }, [])
+  }, [applyMe])
 
   /* 退出登录：吊销服务端会话 */
   const logout = useCallback(async () => {
     try { await api('/api/auth/logout', { method: 'POST' }) } catch { /* ignore */ }
     try { localStorage.removeItem(KEY) } catch { /* ignore */ }
-    setMeState(null)
+    applyMe(null)
     setActivated(false)
     setMembers([])
-  }, [])
+  }, [applyMe])
 
   /* 兼容旧接口：外部需要主动刷新成员资料时调用 */
   const setMe = useCallback((m) => {
     if (m) {
       try { localStorage.setItem(KEY, JSON.stringify(m)) } catch { /* ignore */ }
-      setMeState(m)
+      applyMe(m)
       setActivated(true)
     } else {
       logout()
     }
-  }, [logout])
+  }, [applyMe, logout])
 
   const value = useMemo(
     () => ({ me, members, activated, activate, setMe, logout, reload: load }),

@@ -23,6 +23,13 @@ const readDetail = async (res, fallback) => {
   return msg
 }
 
+/* 抛错时带上 HTTP 状态码（e.status），调用方可区分未登录（401）等场景 */
+const httpError = (status, msg) => {
+  const err = new Error(msg)
+  err.status = status
+  return err
+}
+
 export async function api(path, { method = 'GET', body } = {}) {
   const isForm = body instanceof FormData
   const res = await fetch(BASE + path, {
@@ -36,7 +43,7 @@ export async function api(path, { method = 'GET', body } = {}) {
     }
     let msg = `HTTP ${res.status}`
     msg = await readDetail(res, msg)
-    throw new Error(msg)
+    throw httpError(res.status, msg)
   }
   const ct = res.headers.get('content-type') || ''
   return ct.includes('json') ? res.json() : res.blob()
@@ -55,7 +62,7 @@ export async function streamSSE(path, body, onEvent) {
     }
     let msg = `HTTP ${res.status}`
     msg = await readDetail(res, msg)
-    throw new Error(msg)
+    throw httpError(res.status, msg)
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -99,7 +106,7 @@ export function xhrSend(path, { method = 'PUT', body, onProgress, contentType = 
       } else {
         let msg = `HTTP ${xhr.status}`
         try { msg = describeDetail(JSON.parse(xhr.responseText).detail, msg) } catch { /* ignore */ }
-        reject(new Error(msg))
+        reject(httpError(xhr.status, msg))
       }
     }
     xhr.onerror = () => reject(new Error('网络错误'))

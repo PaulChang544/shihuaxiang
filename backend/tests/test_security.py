@@ -92,31 +92,6 @@ def test_docs_disabled_by_default(client):
     assert client.get("/openapi.json").status_code == 404
 
 
-def test_ssrf_url_validation(client):
-    from backend.app import wechat
-
-    for bad in (
-        "http://127.0.0.1:8000/?mp.weixin.qq.com",
-        "http://mp.weixin.qq.com.evil.com/s/x",
-        "https://mp.weixin.qq.com:8080/s/x",
-        "file:///etc/passwd?mp.weixin.qq.com",
-    ):
-        with pytest.raises(wechat.FetchError):
-            wechat._validate_url(bad)
-
-    # 合法域名（mock DNS，避免测试环境联网）：正常通过
-    import socket as _socket
-    import types
-
-    fake_info = [(2, 1, 6, "", ("203.0.113.10", 0))]
-    orig = _socket.getaddrinfo
-    _socket.getaddrinfo = lambda *a, **k: fake_info
-    try:
-        wechat._validate_url("https://mp.weixin.qq.com/s/abc")
-    finally:
-        _socket.getaddrinfo = orig
-
-
 def test_request_body_limit(client):
     """带 Content-Length 的超大请求在中间件层即被拒绝（413）。"""
     big = b"0" * (26 * 1024 * 1024)

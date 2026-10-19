@@ -1,10 +1,11 @@
 import asyncio
+import pathlib
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel
 
-from .. import db, jobs, llm, prompts, wechat
+from .. import article_shot, auth, db, jobs, llm, prompts
 from ..agent import wiki
 from ..schemas import MaterialInfo
 
@@ -20,12 +21,8 @@ class ExtractIn(BaseModel):
     url: str = ""
 
 
-class UrlIn(BaseModel):
-    url: str
-
-
 async def extract_and_save(text: str, url: str = "", source_title: str = "") -> dict:
-    """AI 提取推文信息并写入 materials 表，返回完整条目。端点与链接抓取共用。"""
+    """AI 提取推文信息并写入 materials 表，返回完整条目。粘贴正文与截图导入共用。"""
     messages = prompts.build_material_messages(text, url)
     raw = await llm.chat(messages, json_mode=True)
     try:
@@ -71,28 +68,62 @@ async def _run_material_extract(job_id: int, text: str, url: str, source_title: 
         jobs.update_job(job_id, status="failed", error=f"素材入库失败：{str(e)[:200]}")
 
 
-async def _run_material_extract_url(job_id: int, url: str) -> None:
-    """后台抓取微信文章并提取入库；风控/网络失败时任务如实报错。"""
+async def _run_material_extract_image(job_id: int, data: bytes, url: str = "") -> None:
+    """后台识别推文长截图（切片视觉转写）→ 提取素材要点 → 入库。
+
+    截图不落盘：正文入库后原始图片即不再需要。非推文截图会被拒收。"""
     jobs.update_job(job_id, status="running")
     try:
-        article = await wechat.fetch_article(url)
-    except wechat.FetchError as e:
+        shot = await article_shot.transcribe(data)
+    except ValueError as e:
         jobs.update_job(job_id, status="failed", error=str(e))
         return
-    except Exception as e:
-        jobs.update_job(job_id, status="failed", error=f"抓取失败：{str(e)[:200]}")
+    except llm.AIError as e:
+        jobs.update_job(job_id, status="failed", error=f"AI 识别失败：{e}")
         return
-    await _run_material_extract(job_id, article["text"], url, article["title"])
+    except Exception as e:
+        jobs.update_job(job_id, status="failed", error=f"截图识别失败：{str(e)[:200]}")
+        return
+    await _run_material_extract(job_id, shot["text"], url, shot["title"])
 
 
 @router.post("/extract")
-async def extract_material(data: ExtractIn):
+async def extract_material(data: ExtractIn, request: Request):
     """粘贴正文入库：立即返回任务号，AI 提取在后台进行（可离开页面，完成时通知）。"""
     text = data.text.strip()
     if len(text) < 20:
         raise HTTPException(400, "推文正文太短，请粘贴完整正文")
-    job_id = jobs.create_job("material_extract", label="素材入库")
-    asyncio.create_task(_run_material_extract(job_id, text, data.url))
+    url = data.url.strip()
+    if not url:
+        raise HTTPException(400, "请先粘贴推文链接")
+    actor = auth.current_member(request)
+    job_id = jobs.create_job("material_extract", label="素材入库", op_id=actor["id"])
+    asyncio.create_task(_run_material_extract(job_id, text, url))
+    return {"job_id": job_id, "status": "pending"}
+
+
+@router.post("/extract-image")
+async def extract_material_image(
+    request: Request,
+    file: UploadFile = File(...),
+    url: str = Form(""),
+):
+    """上传推文页面长截图导入（与活动归档同一识别链路）：立即返回任务号，
+    整段识别 + 素材提取都在后台完成。url 必填（仅作为来源链接记录，不做抓取）。"""
+    url = (url or "").strip()
+    if not url:
+        raise HTTPException(400, "请先粘贴推文链接")
+    ext = pathlib.Path(file.filename or "").suffix.lower()
+    if ext not in article_shot.IMAGE_EXTS:
+        raise HTTPException(400, f"不支持的截图类型：{ext or '（无后缀）'}")
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "截图内容为空")
+    if len(data) > article_shot.MAX_BYTES:
+        raise HTTPException(400, "截图超过 20MB 上限")
+    actor = auth.current_member(request)
+    job_id = jobs.create_job("material_extract", label="截图素材入库", op_id=actor["id"])
+    asyncio.create_task(_run_material_extract_image(job_id, data, url.strip()))
     return {"job_id": job_id, "status": "pending"}
 
 
@@ -145,17 +176,6 @@ async def enhance_material(mid) -> bool:
     except Exception as e:  # 后台任务：AI 不可用或配置缺失时放弃，不打断主流程
         print(f"[enhance_material] mid={mid} 补全失败：{e}")
         return False
-
-
-@router.post("/extract-from-url")
-async def extract_from_url(data: UrlIn):
-    """链接抓取入库（异步）：服务端抓取可能被微信风控拦截，失败原因会写进任务。"""
-    url = data.url.strip()
-    if not url:
-        raise HTTPException(400, "请先粘贴微信文章链接")
-    job_id = jobs.create_job("material_extract", label="链接素材入库")
-    asyncio.create_task(_run_material_extract_url(job_id, url))
-    return {"job_id": job_id, "status": "pending"}
 
 
 def _material_update(info: dict, mid: int):

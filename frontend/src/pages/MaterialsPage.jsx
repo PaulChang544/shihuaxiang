@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import SectionHead from '../components/SectionHead'
 import CardColumns from '../components/CardColumns'
@@ -6,7 +6,7 @@ import Button from '../ui/Button.jsx'
 import Icon from '../ui/Icon.jsx'
 import { Badge } from '../ui/bits.jsx'
 import { Modal } from '../ui/Overlay.jsx'
-import { addJob } from '../jobs.js'
+import { addJob, readJobs } from '../jobs.js'
 import Select from '../ui/Select.jsx'
 import { useToast } from '../ui/Toast.jsx'
 
@@ -21,9 +21,11 @@ export default function MaterialsPage() {
   const [url, setUrl] = useState('')
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(false)   // 粘贴正文 → AI 提取
-  const [fetching, setFetching] = useState(false) // 链接 → 服务端抓取 + AI 提取
+  const [busy, setBusy] = useState(false)         // 截图上传中
+  const [shotJob, setShotJob] = useState(() => readJobs().find((j) => j.kind === 'material_extract' && j.label === '截图素材入库') || null)
   const [editing, setEditing] = useState(null)
   const [confirming, setConfirming] = useState(null)   // 待删除素材（确认弹窗）
+  const shotRef = useRef(null)
   const push = useToast()
 
   const load = () => api('/api/materials').then(setItems).catch((e) => push({ title: e.message, type: 'error' }))
@@ -31,6 +33,10 @@ export default function MaterialsPage() {
   useEffect(() => { load() }, [])
 
   const extract = async () => {
+    if (!url.trim()) {
+      push({ title: '请先粘贴推文链接', type: 'warning' })
+      return
+    }
     if (!text.trim()) {
       push({ title: '请先粘贴推文正文', type: 'warning' })
       return
@@ -44,28 +50,46 @@ export default function MaterialsPage() {
     } catch (e) { push({ title: e.message, type: 'error' }) } finally { setLoading(false) }
   }
 
-  const fetchUrl = async () => {
+  /* 上传推文长截图：服务端切片转写后提取素材（可离开页面），链接必填与归档一致 */
+  const onShotPick = async (e) => {
+    const f = e.target.files?.[0]
+    e.target.value = ''
+    if (!f) return
     if (!url.trim()) {
-      push({ title: '请先粘贴微信文章链接', type: 'warning' })
+      push({ title: '请先粘贴推文链接', type: 'warning' })
       return
     }
-    setFetching(true)
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {})
+    }
+    setBusy(true)
     try {
-      const d = await api('/api/materials/extract-from-url', { method: 'POST', body: { url: url.trim() } })
-      addJob({ job_id: d.job_id, kind: 'material_extract', ref_id: null, label: '链接素材入库' })
-      push({ title: '已提交抓取提取', msg: '后台进行中，可以离开本页；完成后会通知你', type: 'info', duration: 5000 })
-      setUrl('')
-    } catch (e) { push({ title: '抓取失败', msg: e.message, type: 'error' }) } finally { setFetching(false) }
+      const fd = new FormData()
+      fd.append('file', f)
+      fd.append('url', url.trim())
+      const d = await api('/api/materials/extract-image', { method: 'POST', body: fd })
+      const entry = { job_id: d.job_id, kind: 'material_extract', ref_id: null, label: '截图素材入库' }
+      addJob(entry)
+      setShotJob(entry)
+      push({ title: '已提交 AI 识别', msg: '识别和提取在后台进行，可以离开本页；完成后会通知你', type: 'info', duration: 5200 })
+    } catch (e2) {
+      push({ title: '上传失败', msg: e2.message, type: 'error' })
+    } finally {
+      setBusy(false)
+    }
   }
 
   /* 作业完成（App 级 watcher 广播）：素材类任务完成后刷新列表 */
   useEffect(() => {
     const onDone = (e) => {
-      if (e.detail?.kind === 'material_extract') load()
+      const d = e.detail
+      if (d?.kind !== 'material_extract') return
+      if (shotJob && d.job_id === shotJob.job_id) setShotJob(null)
+      load()
     }
     window.addEventListener('shx-job-done', onDone)
     return () => window.removeEventListener('shx-job-done', onDone)
-  }, [])
+  }, [shotJob?.job_id])
 
   const openEdit = (item) => setEditing({ ...item })
 
@@ -92,18 +116,29 @@ export default function MaterialsPage() {
     <div className="panel-stack" style={{ gap: 26 }}>
       <section>
         <SectionHead idx="01" cn="素材入库" en="Intake"
-          tail="LINK | PASTE → AI EXTRACT" />
+          tail="SCREENSHOT | PASTE → AI EXTRACT" />
         <div className="glass panel-stack" style={{ padding: '20px 22px' }}>
           <div className="field">
-            <label className="field__label" htmlFor="material-url">推文链接 · SOURCE URL <small>公众号文章链接，可直接抓取</small></label>
+            <label className="field__label" htmlFor="material-shot">推文长截图 · SCREENSHOT</label>
             <div className="panel-row" style={{ gap: 10, flexWrap: 'wrap' }}>
-              <input id="material-url" className="input" style={{ flex: '3 1 220px' }} placeholder="https://mp.weixin.qq.com/s/..." value={url}
-                onChange={e => setUrl(e.target.value)} />
-              <Button icon="download" loading={fetching} onClick={fetchUrl}>从链接抓取</Button>
+              <input ref={shotRef} id="material-shot" type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={onShotPick} />
+              <Button variant="primary" icon="camera" loading={busy} disabled={!!shotJob}
+                onClick={() => shotRef.current?.click()}>
+                {shotJob ? 'AI 正在识别截图…' : '上传推文长截图导入'}
+              </Button>
+              <span className="wb-card__muted">
+                {shotJob ? '识别在后台进行，可以离开本页；完成后会自动通知，无需停留等待。'
+                  : 'AI 自动转写标题与正文并提取素材；非推文截图会被拒收。'}
+              </span>
             </div>
           </div>
           <div className="field">
-            <label className="field__label" htmlFor="material-text">推文正文 · ARTICLE BODY <small>链接抓取受限（需验证/已删除）时，此处手动粘贴</small></label>
+            <label className="field__label" htmlFor="material-url">推文链接 · SOURCE URL <small>必填，仅记录来源不抓取</small></label>
+            <input id="material-url" className="input" placeholder="https://mp.weixin.qq.com/s/..." value={url}
+              onChange={e => setUrl(e.target.value)} />
+          </div>
+          <div className="field">
+            <label className="field__label" htmlFor="material-text">推文正文 · ARTICLE BODY <small>可选：没有截图时直接粘贴正文</small></label>
             <textarea id="material-text" className="textarea" rows={6} placeholder="粘贴微信推文正文，AI 自动提取活动名称 / 类型 / 形式 / 亮点……"
               value={text} onChange={e => setText(e.target.value)} />
           </div>

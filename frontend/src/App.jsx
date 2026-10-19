@@ -140,11 +140,24 @@ export default function App() {
     try { localStorage.setItem(FX_KEY, fxOn ? 'on' : 'off') } catch { /* ignore */ }
   }, [fxOn])
 
-  useEffect(() => {
+  const refreshAiStatus = useCallback(() => {
     api('/api/settings/status')
       .then((s) => setAiReady(Boolean(s.ai_ready)))
-      .catch(() => setAiReady(false))
-  }, [tab])
+      .catch((e) => setAiReady(e?.status === 401 ? null : false)) // 未登录时状态未知，不误报「未配置」
+  }, [])
+
+  /* 登录身份变化（首次激活/换人/退出）后重查：否则首进站会一直停在「未配置」 */
+  useEffect(() => {
+    const onId = () => refreshAiStatus()
+    window.addEventListener('shx-identity-changed', onId)
+    window.addEventListener('shx-ai-status-refresh', onId) // 超管在设置页保存 AI 配置后立即刷新
+    return () => {
+      window.removeEventListener('shx-identity-changed', onId)
+      window.removeEventListener('shx-ai-status-refresh', onId)
+    }
+  }, [refreshAiStatus])
+
+  useEffect(() => { refreshAiStatus() }, [refreshAiStatus, tab])
 
   /* 手机端：文本框聚焦即软键盘弹出，收起底部导航坞避免遮挡输入区 */
   useEffect(() => {

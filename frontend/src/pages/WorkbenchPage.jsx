@@ -549,19 +549,22 @@ export default function WorkbenchPage() {
 
       <div className="wb-section wb-section--pipeline" id="pipelineAnchor">
         <SectionHead idx="02" cn="活动流水线" en="Pipeline"
-          tail={`${acts.length} 项`} />
+          tail={`${active.length} 项`} />
         <div className="wb-tl-list">
-          {acts.length === 0 ? (
+          {active.length === 0 ? (
             <div className="empty glass">
               <div className="empty__art"><Icon name="home" /></div>
-              <div className="empty__title">还没有活动</div>
-              <div className="empty__text">点「新建活动」创建，或去「灵感」页生成点子后一键转为活动。</div>
+              <div className="empty__title">{acts.length ? '没有进行中的活动' : '还没有活动'}</div>
+              <div className="empty__text">
+                {acts.length
+                  ? '所有活动都已归档；点上方「已归档」卡片回看，从归档列表打开详情。'
+                  : '点「新建活动」创建，或去「灵感」页生成点子后一键转为活动。'}
+              </div>
             </div>
           ) : (
-            // 进行中在前，已归档沉底；组内按举办日期从近到远
-            [...acts]
-              .sort((a, b) => (a.stage === 'done' ? 1 : 0) - (b.stage === 'done' ? 1 : 0)
-                || String(a.event_date || '9999').localeCompare(String(b.event_date || '9999'))
+            // 流水线只显示进行中的活动；已归档的只在「已归档」卡片弹窗里回看
+            [...active]
+              .sort((a, b) => String(a.event_date || '9999').localeCompare(String(b.event_date || '9999'))
                 || a.id - b.id)
               .map((a) => (
                 <ActivityTimelineRow key={a.id} act={a} overdue={overdue(a)} onOpen={setOpenId} />

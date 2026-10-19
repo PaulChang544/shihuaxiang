@@ -216,6 +216,7 @@ export default function SettingsPage() {
     })
     push({ title: '已保存', type: 'success' })
     refresh()
+    try { window.dispatchEvent(new Event('shx-ai-status-refresh')) } catch { /* ignore */ }
   }
 
   const onClear = async (flag) => {
@@ -225,6 +226,7 @@ export default function SettingsPage() {
     })
     push({ title: '已清除该 Key', type: 'success' })
     refresh()
+    try { window.dispatchEvent(new Event('shx-ai-status-refresh')) } catch { /* ignore */ }
   }
 
   const onTest = async () => {
@@ -416,7 +418,7 @@ export default function SettingsPage() {
           )}
 
           <div className="field__hint">
-            成员信息经邀请码激活后保存在本机；失效时重新输入邀请码即可。
+            成员各自用邀请码激活登录；登录失效时重新输入邀请码即可。
           </div>
         </div>
       </section>

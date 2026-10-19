@@ -1,7 +1,6 @@
 """活动全生命周期：建活动 → 派发确认 → 六阶段推进 → 发布归档。"""
 
 import asyncio
-import base64
 import datetime
 import pathlib
 import shutil
@@ -13,9 +12,8 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from .. import auth, db, docx_report, jobs, llm, prompts, wechat
+from .. import article_shot, auth, db, docx_report, jobs, llm, prompts
 from ..agent import wiki
-from ..schemas import ArticleInfo
 from .materials import enhance_material
 
 router = APIRouter(prefix="/api/activities")
@@ -442,105 +440,14 @@ def confirm_dispatch(aid: int, request: Request):
         return _detail(conn, aid)
 
 
-ARTICLE_IMAGE_MAX = 20 * 1024 * 1024
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-
-
-TILE_HEIGHT = 1800          # 单次视觉调用的切片高度（视觉 API 拒绝上万像素高的整图）
-TILE_OVERLAP = 140          # 切片重叠带，避免把一行文字切在边界上
-MAX_TILES = 15              # 约 2.7 万像素的截图上限
-
-
-def _article_tiles(src: pathlib.Path):
-    """把长截图切成纵向切片（data URL 列表）；短图原样一片。读不出图返回 []。"""
-    from PIL import Image, ImageOps
-    import io as _io
-    try:
-        img = Image.open(src)
-        if img.width * img.height > 50_000_000:
-            return []  # 解压炸弹防护
-        img = ImageOps.exif_transpose(img).convert("RGB")
-    except Exception:
-        return []
-    w, h = img.size
-    if h <= TILE_HEIGHT:
-        buf = _io.BytesIO()
-        img.save(buf, "JPEG", quality=85)
-        return ["data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode()]
-
-    step = TILE_HEIGHT - TILE_OVERLAP
-    boxes = [(0, y, w, min(y + TILE_HEIGHT, h)) for y in range(0, h, step) if y < h]
-    if len(boxes) > MAX_TILES:
-        return []
-    urls = []
-    for box in boxes:
-        buf = _io.BytesIO()
-        img.crop(box).save(buf, "JPEG", quality=85)
-        urls.append("data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode())
-    return urls
-
-
-EMPTY_MARKERS = {"（空内容）", "(空内容)", "（无内容）", "(无内容)", "（本片无内容）",
-                 "（无文字）", "(无文字)", "（空）", "(空)", "空内容", "无内容", "无文字"}
-
-
-def _merge_tile_text(acc: list[str], chunk: str) -> None:
-    """把切片转写并入累计文本：重叠带上的重复行按「尾部==新片头部」最长匹配剔除；
-    模型对空片输出的「（空内容）」类占位符直接丢弃。"""
-    new_lines = [ln.strip() for ln in chunk.splitlines() if ln.strip()]
-    new_lines = [ln for ln in new_lines if ln not in EMPTY_MARKERS]
-    if acc and new_lines:
-        norm_old = [ln.replace(" ", "") for ln in acc]
-        norm_new = [ln.replace(" ", "") for ln in new_lines]
-        k = 0
-        for kk in range(min(8, len(norm_old), len(norm_new)), 0, -1):
-            if norm_old[-kk:] == norm_new[:kk]:
-                k = kk
-                break
-        new_lines = new_lines[k:]
-    acc.extend(new_lines)
-
-
-
-
 async def _run_archive_job(job_id: int, aid: int, src: pathlib.Path, url: str, op_id: int | None) -> None:
     """后台识别推文长截图（独立于请求/页面生命周期）：切片转写 → 非推文拒收 → 落库。
 
     AI 调用通常 20-60 秒，故整体异步；状态写 jobs 供前端跨页面轮询。"""
     jobs.update_job(job_id, status="running")
     try:
-        tiles = _article_tiles(src)
-        if not tiles:
-            raise ValueError("截图无法读取或过长（超过约 2.7 万像素），请分段截图后分别归档")
-
-        title = ""
-        lines: list[str] = []
-        for i, tile_url in enumerate(tiles):
-            msgs = prompts.build_article_tile_messages(tile_url, first=(i == 0))
-            if i == 0:
-                raw = await llm.chat(msgs, json_mode=True)
-                try:
-                    info = llm.parse_model(raw, ArticleInfo)
-                except llm.AIError:
-                    raw = await llm.chat(msgs + [
-                        {"role": "assistant", "content": raw},
-                        {"role": "user", "content": "你刚才的输出不是合法 JSON，请重新只输出一个 JSON 对象。"},
-                    ], json_mode=True)
-                    info = llm.parse_model(raw, ArticleInfo)
-                if not info.is_article:
-                    raise ValueError("这不是推文页面的截图：未识别到推文标题与正文排版。请上传微信公众号推文页面的长截图")
-                title = info.title
-                _merge_tile_text(lines, info.text)
-            else:
-                try:
-                    chunk = await llm.chat(msgs)
-                except llm.AIError:
-                    chunk = await llm.chat(msgs)  # 单段失败重试一次
-                _merge_tile_text(lines, chunk)
-
-        body = "\n".join(lines).strip()
-        if not body:
-            raise ValueError("截图中未识别到正文文字。请上传推文页面的完整长截图（不是封面或局部图）")
+        shot = await article_shot.transcribe(src)
+        title, body = shot["title"], shot["text"]
 
         with db.get_conn() as conn:
             conn.execute(
@@ -548,7 +455,7 @@ async def _run_archive_job(job_id: int, aid: int, src: pathlib.Path, url: str, o
                 " updated_at=datetime('now','localtime') WHERE id=?",
                 (url, title or "未命名推文", body, aid),
             )
-            _log(conn, f"归档了推文《{title or '未命名推文'}》（截图解析 {len(tiles)} 段）",
+            _log(conn, f"归档了推文《{title or '未命名推文'}》（截图解析 {shot['tiles']} 段）",
                  op_id=op_id, aid=aid, action="archive")
         jobs.update_job(job_id, status="done", label=title or "未命名推文", result={"title": title or "未命名推文"})
     except ValueError as e:
@@ -572,12 +479,12 @@ async def archive_article_image(
     if not url:
         raise HTTPException(400, "请先粘贴已发布的微信文章链接")
     ext = pathlib.Path(file.filename or "").suffix.lower()
-    if ext not in IMAGE_EXTS:
+    if ext not in article_shot.IMAGE_EXTS:
         raise HTTPException(400, f"不支持的截图类型：{ext or '（无后缀）'}")
     data = await file.read()
     if not data:
         raise HTTPException(400, "截图内容为空")
-    if len(data) > ARTICLE_IMAGE_MAX:
+    if len(data) > article_shot.MAX_BYTES:
         raise HTTPException(400, "截图超过 20MB 上限")
     with db.get_conn() as conn:
         _activity_or_404(conn, aid)
