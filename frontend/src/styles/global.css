@@ -3076,16 +3076,21 @@ a:hover {
 .entry-card {
   padding: 16px 18px;
 }
+/* 卡头：标题占满可用宽并自适应折行，动作组顶置右对齐不被挤成竖排错行 */
 .entry-card__head {
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 12px;
+  flex-wrap: wrap;
+  row-gap: 8px;
 }
 .entry-card__title {
   font-family: var(--font-display);
   font-size: 16px;
   color: var(--ink);
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .entry-card__body {
   margin-top: 10px;
@@ -3097,6 +3102,7 @@ a:hover {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  flex: none;
 }
 
 /* 多选下拉（替代 antd Select multiple） */
@@ -3420,7 +3426,7 @@ html.kb-open .mobile-dock {
 }
 .wb-panel__head {
   display: flex;
-  align-items: flex-end;
+  align-items: center; /* 右侧「完成，进入…」与两行标题垂直居中，不再沉到小字基线 */
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
@@ -3439,6 +3445,23 @@ html.kb-open .mobile-dock {
 .wb-xiumi .field {
   flex: 2 1 220px;
   margin: 0;
+}
+/* 策划面板三个 DDL 字段：桌面三列并排，窄屏与手机端单列纵排
+   （此前 JSX 引用了 wb-ddl-grid/-col 但样式缺失，字段被拉成满宽单列） */
+.wb-ddl-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.wb-ddl-grid-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+@media (max-width: 900px) {
+  .wb-ddl-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .att-grid {
   display: grid;
@@ -3600,7 +3623,7 @@ html.kb-open .mobile-dock {
 }
 .wb-tl__sub {
   font-size: 10.5px;
-  color: var(--ink-3);
+  color: var(--ink-2); /* 由 ink-3 提升：节点小注承载「待谁确认/费用」等关键信息，10.5px 灰一档在玻璃底上不足 4.5:1 */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3999,6 +4022,10 @@ html.kb-open .mobile-dock {
   flex: none;
 }
 /* 设置页：邀请码行 */
+/* AI 接入表单：控件限宽到舒适行宽（满宽在桌面拉到 ~1030px，超过 Law 11 的 75ch 上限） */
+.settings-grid form .input {
+  max-width: 640px;
+}
 .wb-invcode {
   font-family: var(--font-display);
   font-size: 16px;
@@ -4070,6 +4097,16 @@ html.kb-open .mobile-dock {
 .page[data-mobile] .chat-flow {
   max-height: calc(100vh - 330px);
 }
+/* 手机端输入强制 16px（iOS 聚焦防缩放）后，placeholder 约占 4 行：
+   原 min-height 62px 容不下，末端被裁切。桌面 15px 字 2 行仍够，不动。 */
+.page[data-mobile] .chat-input .textarea {
+  min-height: 122px; /* 16px × 1.6 行高 × 4 行 + 上下 20px padding */
+}
+@media (max-width: 760px) {
+  .chat-input .textarea {
+    min-height: 122px;
+  }
+}
 /* 灵感页：主按钮全宽置底 */
 .page[data-mobile] .ideas-actions {
   flex-direction: column;
@@ -4084,7 +4121,10 @@ html.kb-open .mobile-dock {
 .page[data-mobile] .ideas-actions .btn:last-child {
   flex: 1 1 100%;
 }
-/* 素材库：主按钮全宽置底 */
+/* 素材库：主按钮右置（与灵感页动作行同向）；手机端下方全宽竖排 */
+.mat-foot {
+  justify-content: flex-end;
+}
 .page[data-mobile] .mat-foot {
   flex-direction: column;
   align-items: stretch;
